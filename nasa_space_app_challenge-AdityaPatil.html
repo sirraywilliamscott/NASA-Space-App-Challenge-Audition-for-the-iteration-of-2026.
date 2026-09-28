@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Perspective is Everything — Eclipse Explorer</title>
+<style>
+  :root {
+    --bg: #05070d;
+    --panel: #0c1120;
+    --line: #1e2740;
+    --text: #eef1fa;
+    --text-dim: #8b93ad;
+    --accent: #ffb454;
+    --accent2: #5fb4ff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow-x: hidden;
+    height: 100%;
+  }
+  header {
+    padding: 14px 18px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0 0 2px;
+    letter-spacing: 0.2px;
+  }
+  header p {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    margin: 0;
+    line-height: 1.45;
+  }
+  .stage {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--line);
+  }
+  .view {
+    position: relative;
+    background: #000;
+    height: 46vh;
+    min-height: 260px;
+  }
+  .view canvas { display: block; width: 100%; height: 100%; }
+  .view-label {
+    position: absolute;
+    top: 8px; left: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text);
+    background: rgba(5,7,13,0.55);
+    padding: 4px 8px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
+  .view-sub {
+    position: absolute;
+    top: 8px; right: 10px;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: rgba(5,7,13,0.55);
+    padding: 4px 8px;
+    border-radius: 4px;
+    pointer-events: none;
+    text-align: right;
+  }
+  .controls {
+    padding: 14px 18px 20px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .row label {
+    font-size: 12px;
+    color: var(--text-dim);
+    min-width: 66px;
+  }
+  input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--line);
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid #1a1206;
+  }
+  .readout {
+    font-size: 12px;
+    color: var(--text);
+    min-width: 60px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .btnrow {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:active { transform: scale(0.97); }
+  button.primary {
+    background: var(--accent);
+    color: #1a1206;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .legend {
+    padding: 0 18px 18px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    line-height: 1.6;
+  }
+  .legend b { color: var(--text); }
+  .status {
+    font-size: 12px;
+    color: var(--accent2);
+    margin-top: 4px;
+    min-height: 16px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Perspective is everything</h1>
+  <p>How a solar eclipse looks radically different depending on where you stand — from the ground, or from deep space.</p>
+</header>
+
+<div class="stage">
+  <div class="view" id="viewGround">
+    <div class="view-label">Ground view</div>
+    <div class="view-sub" id="groundSub">Looking up</div>
+  </div>
+  <div class="view" id="viewSpace">
+    <div class="view-label">Space view (DSCOVR)</div>
+    <div class="view-sub" id="spaceSub">Looking down at Earth</div>
+  </div>
+</div>
+
+<div class="controls">
+  <div class="row">
+    <label>Time</label>
+    <input type="range" id="timeSlider" min="0" max="1000" value="500" step="1" />
+    <span class="readout" id="timeReadout">T+0:00</span>
+  </div>
+  <div class="btnrow">
+    <button id="resetBtn">Reset to totality</button>
+  </div>
+  <div class="status" id="statusLine"></div>
+</div>
+
+<div class="legend">
+  <b>How to read this:</b> drag the slider to scrub through ~70 minutes surrounding a total solar eclipse. As the Moon orbits Earth and crosses the Sun-Earth line, its shadow sweeps across Earth (space view) exactly when an observer on the ground sees the Sun blocked (ground view).
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function() {
+  "use strict";
+
+  var EARTH_R = 6.0;
+  var MOON_R = 1.63;
+  var MOON_ORBIT_R = 24;
+  var SUN_R = 20;
+  var SUN_DIST = 940;
+  var DSCOVR_DIST = 90;
+
+
+  var totalMinutes = 70;
+  var totalitySlider = 500;
+
+  var timeParam = 0.5;
+
+  function minutesFromParam(p) {
+    return (p - 0.5) * totalMinutes;
+  }
+
+  function makeStarfield(scene, count) {
+    var geo = new THREE.BufferGeometry();
+    var positions = [];
+    for (var i = 0; i < count; i++) {
+      var r = 1400 + Math.random() * 400;
+      var theta = Math.random() * Math.PI * 2;
+      var phi = Math.acos((Math.random() * 2) - 1);
+      positions.push(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.sin(phi) * Math.sin(theta),
+        r * Math.cos(phi)
+      );
+    }
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    var mat = new THREE.PointsMaterial({ color: 0xffffff, size: 1.1, sizeAttenuation: true });
+    var pts = new THREE.Points(geo, mat);
+    scene.add(pts);
+  }
+
+  var spaceContainer = document.getElementById('viewSpace');
+  var spaceScene = new THREE.Scene();
+  var spaceCamera = new THREE.PerspectiveCamera(42, spaceContainer.clientWidth / spaceContainer.clientHeight, 0.1, 3000);
+  var spaceRenderer = new THREE.WebGLRenderer({ antialias: true });
+  spaceRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  spaceContainer.appendChild(spaceRenderer.domElement);
+  makeStarfield(spaceScene, 1800);
+
+  var sunLight = new THREE.PointLight(0xfff3d8, 2.2, 0, 0);
+  spaceScene.add(sunLight);
+  spaceScene.add(new THREE.AmbientLight(0x223344, 0.35));
+
+  var sunGroup = new THREE.Group();
+  var sunGeo = new THREE.IcosahedronGeometry(SUN_R, 1);
+  sunGeo = sunGeo.toNonIndexed();
+  var sunMat = new THREE.MeshBasicMaterial({ color: 0xffdf8a, flatShading: true });
+  var sunMesh = new THREE.Mesh(sunGeo, sunMat);
+  sunGroup.add(sunMesh);
+  (function addSunAura(group, radius) {
+    var layers = [
+      { scale: 1.18, opacity: 0.22, color: 0xffcf6b },
+      { scale: 1.38, opacity: 0.12, color: 0xffb454 },
+      { scale: 1.65, opacity: 0.06, color: 0xff9d3d }
+    ];
+    layers.forEach(function(l) {
+      var g = new THREE.IcosahedronGeometry(radius * l.scale, 1);
+      var m = new THREE.MeshBasicMaterial({ color: l.color, transparent: true, opacity: l.opacity, side: THREE.BackSide, depthWrite: false, flatShading: true });
+      group.add(new THREE.Mesh(g, m));
+    });
+  })(sunGroup, SUN_R);
+  spaceScene.add(sunGroup);
+
+  var earthGroup = new THREE.Group();
+  var EARTH_DETAIL = 2;
+
+  var earthGeo = new THREE.IcosahedronGeometry(EARTH_R, EARTH_DETAIL);
+  earthGeo = earthGeo.toNonIndexed();
+  var earthMat = new THREE.MeshPhongMaterial({ color: 0x1f5fa8, flatShading: true, shininess: 6, emissive: 0x061422, emissiveIntensity: 0.5 });
+  var earthMesh = new THREE.Mesh(earthGeo, earthMat);
+  earthGroup.add(earthMesh);
+
+  (function addLowPolyContinents() {
+    var landMat = new THREE.MeshPhongMaterial({ color: 0x3fae5c, flatShading: true, shininess: 2 });
+    var patchCount = 7;
+    for (var i = 0; i < patchCount; i++) {
+      var patchGeo = new THREE.IcosahedronGeometry(EARTH_R * (0.34 + Math.random() * 0.22), 1);
+      patchGeo = patchGeo.toNonIndexed();
+      var patch = new THREE.Mesh(patchGeo, landMat);
+      patch.scale.set(1, 1, 0.16 + Math.random() * 0.08);
+      var theta = Math.random() * Math.PI;
+      var phi = Math.random() * Math.PI * 2;
+      var dir = new THREE.Vector3().setFromSphericalCoords(1, theta, phi);
+      patch.position.copy(dir.clone().multiplyScalar(EARTH_R * 1.01));
+      patch.lookAt(dir.clone().multiplyScalar(EARTH_R * 2));
+      earthGroup.add(patch);
+    }
+  })();
+
+  (function addIceCaps() {
+    var iceMat = new THREE.MeshPhongMaterial({ color: 0xe8f3fa, flatShading: true, shininess: 4 });
+    [1, -1].forEach(function(sign) {
+      var capGeo = new THREE.IcosahedronGeometry(EARTH_R * 0.42, 1);
+      capGeo = capGeo.toNonIndexed();
+      var cap = new THREE.Mesh(capGeo, iceMat);
+      cap.scale.set(1, 1, 0.14);
+      var dir = new THREE.Vector3(0, sign, 0.15).normalize();
+      cap.position.copy(dir.clone().multiplyScalar(EARTH_R * 1.01));
+      cap.lookAt(dir.clone().multiplyScalar(EARTH_R * 2));
+      earthGroup.add(cap);
+    });
+  })();
+
+  (function addAura(group, radius, colorHex) {
+    var layers = [
+      { scale: 1.06, opacity: 0.16 },
+      { scale: 1.12, opacity: 0.09 },
+      { scale: 1.19, opacity: 0.05 }
+    ];
+    layers.forEach(function(l) {
+      var g = new THREE.SphereGeometry(radius * l.scale, 24, 24);
+      var m = new THREE.MeshBasicMaterial({
+        color: colorHex,
+        transparent: true,
+        opacity: l.opacity,
+        side: THREE.BackSide,
+        depthWrite: false
+      });
+      group.add(new THREE.Mesh(g, m));
+    });
+  })(earthGroup, EARTH_R, 0x6fb8ff);
+
+  spaceScene.add(earthGroup);
+
+  var orbitRingGeo = new THREE.TorusGeometry(MOON_ORBIT_R, 0.045, 6, 80);
+  orbitRingGeo.rotateX(Math.PI / 2);
+  var orbitRingMat = new THREE.MeshBasicMaterial({ color: 0x4a5a80, transparent: true, opacity: 0.35 });
+  var orbitRing = new THREE.Mesh(orbitRingGeo, orbitRingMat);
+  spaceScene.add(orbitRing);
+
+  var moonGroup = new THREE.Group();
+  var moonGeo = new THREE.IcosahedronGeometry(MOON_R, 2);
+  moonGeo = moonGeo.toNonIndexed();
+  (function jitterMoon(geo) {
+    var pos = geo.attributes.position;
+    var v = new THREE.Vector3();
+    for (var i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      var n = v.clone().normalize();
+      var bump = 1 + (Math.random() - 0.5) * 0.05;
+      v.copy(n.multiplyScalar(MOON_R * bump));
+      pos.setXYZ(i, v.x, v.y, v.z);
+    }
+    geo.computeVertexNormals();
+  })(moonGeo);
+  var moonMat = new THREE.MeshPhongMaterial({ color: 0xb9b6ad, flatShading: true, shininess: 1, emissive: 0x0a0908, emissiveIntensity: 0.4 });
+  var moonMesh = new THREE.Mesh(moonGeo, moonMat);
+  moonGroup.add(moonMesh);
+  (function addAura(group, radius, colorHex) {
+    var g = new THREE.SphereGeometry(radius * 1.1, 16, 16);
+    var m = new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.06, side: THREE.BackSide, depthWrite: false });
+    group.add(new THREE.Mesh(g, m));
+  })(moonGroup, MOON_R, 0xcfd6e6);
+  spaceScene.add(moonGroup);
+
+  var shadowConeGeo = new THREE.ConeGeometry(MOON_R * 0.55, MOON_ORBIT_R * 0.7, 24, 1, true);
+  var shadowConeMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false });
+  var shadowCone = new THREE.Mesh(shadowConeGeo, shadowConeMat);
+  spaceScene.add(shadowCone);
+
+
+  var pinGeo = new THREE.SphereGeometry(0.28, 10, 10);
+  var pinMat = new THREE.MeshBasicMaterial({ color: 0xffb454 });
+  var pinMesh = new THREE.Mesh(pinGeo, pinMat);
+  spaceScene.add(pinMesh);
+
+  var groundContainer = document.getElementById('viewGround');
+  var groundScene = new THREE.Scene();
+  var groundCamera = new THREE.PerspectiveCamera(55, groundContainer.clientWidth / groundContainer.clientHeight, 0.05, 500);
+  var groundRenderer = new THREE.WebGLRenderer({ antialias: true });
+  groundRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  groundContainer.appendChild(groundRenderer.domElement);
+
+  var skyGeo = new THREE.SphereGeometry(220, 24, 24);
+  var skyMat = new THREE.MeshBasicMaterial({ color: 0x3a6ea8, side: THREE.BackSide });
+  var skyMesh = new THREE.Mesh(skyGeo, skyMat);
+  groundScene.add(skyMesh);
+
+  makeStarfield(groundScene, 400);
+
+  var groundStarGeo = new THREE.BufferGeometry();
+  (function() {
+    var positions = [];
+    for (var i = 0; i < 900; i++) {
+      var r = 200 + Math.random() * 15;
+      var theta = Math.random() * Math.PI * 2;
+      var phi = Math.acos((Math.random() * 2) - 1);
+      positions.push(r * Math.sin(phi) * Math.cos(theta), r * Math.sin(phi) * Math.sin(theta), r * Math.cos(phi));
+    }
+    groundStarGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  })();
+  var groundStarMat = new THREE.PointsMaterial({ color: 0xffffff, size: 1.0, transparent: true, opacity: 0 });
+  var groundStars = new THREE.Points(groundStarGeo, groundStarMat);
+  groundScene.add(groundStars);
+
+  var groundSunGeo = new THREE.IcosahedronGeometry(4.2, 1);
+  groundSunGeo = groundSunGeo.toNonIndexed();
+  var groundSunMat = new THREE.MeshBasicMaterial({ color: 0xffdf8a, flatShading: true });
+  var groundSunMesh = new THREE.Mesh(groundSunGeo, groundSunMat);
+  groundScene.add(groundSunMesh);
+
+  var groundSunAuraGeo = new THREE.IcosahedronGeometry(4.2 * 1.35, 1);
+  var groundSunAuraMat = new THREE.MeshBasicMaterial({ color: 0xffb454, transparent: true, opacity: 0.18, side: THREE.BackSide, depthWrite: false, flatShading: true });
+  var groundSunAura = new THREE.Mesh(groundSunAuraGeo, groundSunAuraMat);
+  groundScene.add(groundSunAura);
+
+  var coronaGeo = new THREE.RingGeometry(4.25, 6.4, 48);
+  var coronaMat = new THREE.MeshBasicMaterial({ color: 0xfff8e8, side: THREE.DoubleSide, transparent: true, opacity: 0, depthWrite: false });
+  var coronaMesh = new THREE.Mesh(coronaGeo, coronaMat);
+  groundScene.add(coronaMesh);
+
+  var groundMoonLight = new THREE.DirectionalLight(0xfff6e0, 1.1);
+  groundScene.add(groundMoonLight);
+  groundScene.add(new THREE.AmbientLight(0x2a3550, 0.5));
+
+  var groundMoonGeo = new THREE.IcosahedronGeometry(4.05, 2);
+  groundMoonGeo = groundMoonGeo.toNonIndexed();
+  (function jitter(geo, amt) {
+    var pos = geo.attributes.position, v = new THREE.Vector3();
+    for (var i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      var n = v.clone().normalize();
+      v.copy(n.multiplyScalar(v.length() * (1 + (Math.random() - 0.5) * amt)));
+      pos.setXYZ(i, v.x, v.y, v.z);
+    }
+    geo.computeVertexNormals();
+  })(groundMoonGeo, 0.04);
+  var groundMoonMat = new THREE.MeshPhongMaterial({ color: 0xb9b6ad, flatShading: true, shininess: 1, emissive: 0x050505, emissiveIntensity: 0.3 });
+  var groundMoonMesh = new THREE.Mesh(groundMoonGeo, groundMoonMat);
+  groundScene.add(groundMoonMesh);
+
+  groundCamera.position.set(0, 0, 0);
+
+  function resizeAll() {
+    var sw = spaceContainer.clientWidth, sh = spaceContainer.clientHeight;
+    spaceCamera.aspect = sw / sh; spaceCamera.updateProjectionMatrix();
+    spaceRenderer.setSize(sw, sh);
+
+    var gw = groundContainer.clientWidth, gh = groundContainer.clientHeight;
+    groundCamera.aspect = gw / gh; groundCamera.updateProjectionMatrix();
+    groundRenderer.setSize(gw, gh);
+  }
+  window.addEventListener('resize', resizeAll);
+
+  function updatePositions(p) {
+    var sunDir = new THREE.Vector3(0, 0.05, 1).normalize();
+    sunGroup.position.copy(sunDir).multiplyScalar(SUN_DIST);
+    sunLight.position.copy(sunGroup.position);
+
+    earthGroup.position.set(0, 0, 0);
+    earthGroup.rotation.y += 0.0009;
+
+    var sweepAngle = 0.62;
+    var theta = (p - 0.5) * sweepAngle;
+    var orbitQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), theta);
+    var moonDir = sunDir.clone().applyQuaternion(orbitQuat).normalize();
+    var moonPos = moonDir.multiplyScalar(MOON_ORBIT_R);
+    moonGroup.position.copy(moonPos);
+    moonGroup.rotation.y += 0.0006;
+
+    var toEarth = new THREE.Vector3(0,0,0).sub(moonGroup.position).normalize();
+    shadowCone.position.copy(moonGroup.position).addScaledVector(toEarth, (MOON_ORBIT_R - EARTH_R) * 0.5);
+    shadowCone.lookAt(moonGroup.position.clone().addScaledVector(toEarth, MOON_ORBIT_R));
+    shadowCone.rotateX(Math.PI / 2);
+    var alignment = 1 - Math.min(1, Math.abs(p - 0.5) * 6);
+    shadowConeMat.opacity = Math.max(0, 0.55 * alignment);
+
+
+    var pinDir = sunDir.clone();
+    var pinPos = pinDir.multiplyScalar(EARTH_R * 1.01);
+    pinMesh.position.copy(pinPos);
+
+    var camPos = sunDir.clone().multiplyScalar(EARTH_R + 34);
+    camPos.y += 6;
+    camPos.x += 8;
+    spaceCamera.position.copy(camPos);
+    spaceCamera.lookAt(0, 0, 0);
+
+    var moonOffsetX = theta * 26;
+    var moonOffsetY = theta * 3.5;
+    groundSunMesh.position.set(0, 0, -34);
+    groundSunAura.position.set(0, 0, -34);
+    groundMoonMesh.position.set(moonOffsetX, moonOffsetY, -26);
+    coronaMesh.position.set(0, 0, -33.9);
+    coronaMesh.lookAt(groundCamera.position.x, groundCamera.position.y, groundCamera.position.z + 10);
+
+    var totalityCloseness = 1 - Math.min(1, Math.abs(p - 0.5) * 10);
+    coronaMat.opacity = Math.max(0, totalityCloseness * 0.85);
+    groundSunAuraMat.opacity = Math.max(0.04, 0.18 * (1 - totalityCloseness * 0.9));
+
+    var skyDark = Math.max(0.05, 1 - totalityCloseness * 0.92);
+    var skyColor = new THREE.Color(0x3a6ea8).lerp(new THREE.Color(0x02030a), 1 - skyDark);
+    skyMat.color.copy(skyColor);
+    groundStarMat.opacity = Math.max(0, (totalityCloseness - 0.4) * 1.4);
+
+    var sunDim = 1 - totalityCloseness * 0.7;
+    groundSunMat.color.copy(new THREE.Color(0xffdf8a).multiplyScalar(sunDim));
+
+    groundMoonLight.position.set(0, 0.2, -34);
+    groundMoonLight.target.position.copy(groundMoonMesh.position);
+    groundScene.add(groundMoonLight.target);
+    groundMoonLight.intensity = 1.1;
+
+    groundCamera.lookAt(0, 0, -30);
+
+    var mins = minutesFromParam(p);
+    var label;
+    if (Math.abs(mins) < 0.4) label = "Totality — Moon fully covers the Sun";
+    else if (mins < 0) label = "Partial phase — Moon approaching Sun's disc (" + Math.abs(mins).toFixed(1) + " min to totality)";
+    else label = "Partial phase — Moon departing Sun's disc (+" + mins.toFixed(1) + " min past totality)";
+    document.getElementById('statusLine').textContent = label;
+
+    var timeStr = (mins >= 0 ? "T+" : "T-") + formatMMSS(Math.abs(mins));
+    document.getElementById('timeReadout').textContent = timeStr;
+  }
+
+  function formatMMSS(minsFloat) {
+    var m = Math.floor(minsFloat);
+    var s = Math.round((minsFloat - m) * 60);
+    if (s === 60) { s = 0; m += 1; }
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    spaceRenderer.render(spaceScene, spaceCamera);
+    groundRenderer.render(groundScene, groundCamera);
+  }
+
+  var timeSlider = document.getElementById('timeSlider');
+  var resetBtn = document.getElementById('resetBtn');
+
+  function applySlider() {
+    var p = parseInt(timeSlider.value, 10) / 1000;
+    timeParam = p;
+    updatePositions(p);
+  }
+
+  timeSlider.addEventListener('input', applySlider);
+
+  resetBtn.addEventListener('click', function() {
+    timeSlider.value = totalitySlider;
+    applySlider();
+  });
+
+  resizeAll();
+  applySlider();
+  animate();
+})();
+</script>
+
+</body>
+</html>
